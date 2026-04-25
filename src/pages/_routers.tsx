@@ -1,3 +1,4 @@
+import AccountCircleRoundedIcon from '@mui/icons-material/AccountCircleRounded'
 import DnsRoundedIcon from '@mui/icons-material/DnsRounded'
 import ForkRightRoundedIcon from '@mui/icons-material/ForkRightRounded'
 import HomeRoundedIcon from '@mui/icons-material/HomeRounded'
@@ -17,8 +18,10 @@ import RulesSvg from '@/assets/image/itemicon/rules.svg?react'
 import SettingsSvg from '@/assets/image/itemicon/settings.svg?react'
 import UnlockSvg from '@/assets/image/itemicon/unlock.svg?react'
 
-import Layout from './_layout'
+import ProtectedLayout from './_protected'
 import ConnectionsPage from './connections'
+import DxmaxAccountPage from './dxmax-account'
+import DxmaxLoginPage from './dxmax-login'
 import HomePage from './home'
 import ProfilesPage from './profiles'
 import ProxiesPage from './proxies'
@@ -75,12 +78,25 @@ export const navItems = [
     icon: [<SettingsRoundedIcon key="mui" />, <SettingsSvg key="svg" />],
     Component: SettingsPage,
   },
+  {
+    label: '我的',
+    path: '/account',
+    icon: [
+      <AccountCircleRoundedIcon key="mui" />,
+      <AccountCircleRoundedIcon key="svg" />,
+    ],
+    Component: DxmaxAccountPage,
+  },
 ]
 
 export const router = createBrowserRouter([
   {
+    path: '/login',
+    Component: DxmaxLoginPage,
+  },
+  {
     path: '/',
-    Component: Layout,
+    Component: ProtectedLayout,
     children: navItems.map(
       (item) =>
         ({

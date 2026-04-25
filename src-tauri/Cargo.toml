@@ -1,10 +1,10 @@
 [package]
 name = "clash-verge"
-version = "2.4.8"
-description = "clash verge"
-authors = ["zzzgydi", "Tunglies", "wonfen", "MystiPanda"]
+version = "1.0.0"
+description = "大炫Max"
+authors = ["大炫Max", "zzzgydi", "Tunglies", "wonfen", "MystiPanda"]
 license = "GPL-3.0-only"
-repository = "https://github.com/clash-verge-rev/clash-verge-rev.git"
+repository = "https://github.com/imedisonxuan/dxmax-client.git"
 default-run = "clash-verge"
 build = "build.rs"
 edition = "2024"

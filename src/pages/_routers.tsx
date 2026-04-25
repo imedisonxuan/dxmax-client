@@ -25,6 +25,7 @@ import DxmaxAccountPage from './dxmax-account'
 import DxmaxHomePage from './dxmax-home'
 import DxmaxLoginPage from './dxmax-login'
 import DxmaxMorePage from './dxmax-more'
+import DxmaxNodesPage from './dxmax-nodes'
 import ProfilesPage from './profiles'
 import ProxiesPage from './proxies'
 import RulesPage from './rules'
@@ -112,6 +113,10 @@ export const router = createBrowserRouter([
       {
         path: '/more',
         Component: DxmaxMorePage,
+      },
+      {
+        path: '/nodes',
+        Component: DxmaxNodesPage,
       },
     ],
   },

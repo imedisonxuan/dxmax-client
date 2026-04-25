@@ -2,7 +2,11 @@ import { useRouteError } from 'react-router'
 
 export default function RouteErrorBoundary() {
   const err = useRouteError()
-  console.error('[ROUTE ERROR]', err)
+  const errMsg = err instanceof Error ? err.message : String(err)
+  const errName = err instanceof Error ? err.name : 'UnknownError'
+  console.error('[ROUTE ERROR NAME]', errName)
+  console.error('[ROUTE ERROR MSG]', errMsg)
+  console.error('[ROUTE ERROR FULL]', err)
   const msg =
     err instanceof Error
       ? `${err.name}: ${err.message}\n\n${err.stack}`

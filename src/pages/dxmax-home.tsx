@@ -144,7 +144,7 @@ export default function DxmaxHomePage() {
 
       {/* 节点选择条 */}
       <div
-        onClick={() => navigate('/proxies')}
+        onClick={() => navigate('/nodes')}
         style={{
           height: 52,
           borderRadius: 999,

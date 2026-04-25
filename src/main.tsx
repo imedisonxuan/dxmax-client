@@ -10,6 +10,7 @@ import { RouterProvider } from 'react-router'
 import { MihomoWebSocket } from 'tauri-plugin-mihomo-api'
 
 import { BaseErrorBoundary } from './components/base'
+import { hideInitialOverlay } from './pages/_layout/utils'
 import { router } from './pages/_routers'
 import { AppDataProvider } from './providers/app-data-provider'
 import { WindowProvider } from './providers/window'
@@ -46,6 +47,10 @@ const initializeApp = (initialThemeMode: 'light' | 'dark') => {
     <LoadingCacheProvider key="loading" />,
     <UpdateStateProvider key="update" />,
   ]
+
+  // 启动期 #initial-loading-overlay 必须在第一次 React render 后立刻移除,
+  // 不能依赖 layout 组件的 useEffect (StrictMode 会让 cleanup 抵消掉 setTimeout)
+  requestAnimationFrame(() => hideInitialOverlay())
 
   const root = createRoot(container)
   root.render(

@@ -4,7 +4,10 @@
  * 替代 Verge 原版庞大 _layout.tsx(留备份)
  */
 
+import { useEffect } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router'
+
+import { hideInitialOverlay } from './_layout/utils'
 
 const ACCENT = '#3B82F6'
 const ACCENT_LIGHT = '#DBEAFE'
@@ -47,6 +50,14 @@ const TABS: TabDef[] = [
 export default function DxmaxLayout() {
   const navigate = useNavigate()
   const { pathname } = useLocation()
+
+  // 必须在挂载后移除 Verge 启动期的全屏 overlay,否则被 #2E303D 暗色盖住看不见 UI
+  useEffect(() => {
+    const timer = hideInitialOverlay()
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [])
 
   return (
     <div

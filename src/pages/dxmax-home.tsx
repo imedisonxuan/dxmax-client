@@ -47,9 +47,17 @@ export default function DxmaxHomePage() {
   const nodeName = currentProxy?.name || primaryGroupName || '未选择节点'
 
   const togglePower = () => {
-    toggleSystemProxy(!connected).catch((e) =>
-      console.warn('[DxmaxHome] toggle 系统代理失败', e),
-    )
+    console.log('[DxmaxHome] click power, current connected =', connected)
+    toggleSystemProxy(!connected).catch((e) => {
+      console.warn('[DxmaxHome] toggle 系统代理失败', e)
+      alert(
+        `开启系统代理失败:${e instanceof Error ? e.message : String(e)}\n\n常见原因:\n1. mihomo 内核未运行(看 dev 终端日志)\n2. macOS 系统代理设置权限被拒\n3. mixedPort 未监听`,
+      )
+    })
+  }
+
+  const showNotice = () => {
+    alert('公告功能开发中,敬请期待。')
   }
 
   return (
@@ -106,6 +114,7 @@ export default function DxmaxHomePage() {
           大炫<span style={{ color: ACCENT }}>Max</span>
         </div>
         <div
+          onClick={showNotice}
           style={{
             width: 36,
             height: 36,
@@ -114,7 +123,7 @@ export default function DxmaxHomePage() {
             alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
-            cursor: 'default',
+            cursor: 'pointer',
           }}
         >
           <div

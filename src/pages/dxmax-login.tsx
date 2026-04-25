@@ -53,6 +53,8 @@ export default function DxmaxLoginPage() {
 
       try {
         const subUrl = buildSubscribeUrl(res.token)
+        console.log('[DxmaxLogin] applogin 返回 token:', res.token)
+        console.log('[DxmaxLogin] 准备 importProfile URL:', subUrl)
         const cur = await getProfiles()
         if (cur.items?.length) {
           for (const item of cur.items) {
@@ -66,9 +68,15 @@ export default function DxmaxLoginPage() {
         await importProfile(subUrl)
         const after = await getProfiles()
         const newProfile = after.items?.[after.items.length - 1]
+        console.log(
+          '[DxmaxLogin] importProfile 完成,新 profile:',
+          newProfile?.uid,
+          newProfile?.name,
+        )
         if (newProfile) {
           await patchProfilesConfig({ current: newProfile.uid })
           await enhanceProfiles()
+          console.log('[DxmaxLogin] enhanceProfiles 完成')
         }
       } catch (e) {
         console.error('[DxmaxLogin] 导入订阅失败', e)

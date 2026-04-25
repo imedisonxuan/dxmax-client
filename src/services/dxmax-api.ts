@@ -8,9 +8,12 @@ import { resolveApiBase } from './dxmax-host'
 
 const SUB_BASE = 'https://sub.dxmax.cn'
 
-/** 拼标准 v2board 订阅 URL(applogin 返回的 token 就是订阅 token) */
+/** 拼标准 v2board 订阅 URL(applogin 返回的 token 就是订阅 token)
+ * 不加 flag 参数,跟用户在 v2board 用户中心复制的链接保持一致;
+ * mihomo 内核兼容标准 v2board clash 返回格式
+ */
 export function buildSubscribeUrl(token: string) {
-  return `${SUB_BASE}/api/v1/client/subscribe?token=${encodeURIComponent(token)}&flag=clash.meta`
+  return `${SUB_BASE}/api/v1/client/subscribe?token=${encodeURIComponent(token)}`
 }
 
 export interface LoginResponse {

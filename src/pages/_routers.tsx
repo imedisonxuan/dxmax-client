@@ -19,10 +19,12 @@ import SettingsSvg from '@/assets/image/itemicon/settings.svg?react'
 import UnlockSvg from '@/assets/image/itemicon/unlock.svg?react'
 
 import ProtectedLayout from './_protected'
+import RouteErrorBoundary from './_route-error'
 import ConnectionsPage from './connections'
 import DxmaxAccountPage from './dxmax-account'
+import DxmaxHomePage from './dxmax-home'
 import DxmaxLoginPage from './dxmax-login'
-import HomePage from './home'
+import DxmaxMorePage from './dxmax-more'
 import ProfilesPage from './profiles'
 import ProxiesPage from './proxies'
 import RulesPage from './rules'
@@ -34,7 +36,7 @@ export const navItems = [
     label: 'layout.components.navigation.tabs.home',
     path: '/',
     icon: [<HomeRoundedIcon key="mui" />, <HomeSvg key="svg" />],
-    Component: HomePage,
+    Component: DxmaxHomePage,
   },
   {
     label: 'layout.components.navigation.tabs.proxies',
@@ -93,16 +95,24 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     Component: DxmaxLoginPage,
+    ErrorBoundary: RouteErrorBoundary,
   },
   {
     path: '/',
     Component: ProtectedLayout,
-    children: navItems.map(
-      (item) =>
-        ({
-          path: item.path,
-          Component: item.Component,
-        }) as RouteObject,
-    ),
+    ErrorBoundary: RouteErrorBoundary,
+    children: [
+      ...navItems.map(
+        (item) =>
+          ({
+            path: item.path,
+            Component: item.Component,
+          }) as RouteObject,
+      ),
+      {
+        path: '/more',
+        Component: DxmaxMorePage,
+      },
+    ],
   },
 ])

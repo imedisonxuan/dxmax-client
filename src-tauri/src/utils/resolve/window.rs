@@ -10,12 +10,12 @@ const LIGHT_BACKGROUND_COLOR: Color = Color(245, 245, 245, 255); // #F5F5F5
 const DARK_BACKGROUND_HEX: &str = "#2E303D";
 const LIGHT_BACKGROUND_HEX: &str = "#F5F5F5";
 
-// 定义默认窗口尺寸常量
-const DEFAULT_WIDTH: f64 = 940.0;
-const DEFAULT_HEIGHT: f64 = 700.0;
+// 大炫Max 设计稿规定窗口尺寸 900×650 固定
+const DEFAULT_WIDTH: f64 = 900.0;
+const DEFAULT_HEIGHT: f64 = 650.0;
 
-const MINIMAL_WIDTH: f64 = 520.0;
-const MINIMAL_HEIGHT: f64 = 520.0;
+const MINIMAL_WIDTH: f64 = 900.0;
+const MINIMAL_HEIGHT: f64 = 650.0;
 
 #[cfg(target_os = "linux")]
 const DEFAULT_DECORATIONS: bool = false;
@@ -66,6 +66,9 @@ pub async fn build_new_window() -> Result<WebviewWindow, String> {
     .fullscreen(false)
     .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
     .min_inner_size(MINIMAL_WIDTH, MINIMAL_HEIGHT)
+    .max_inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    .resizable(false)
+    .maximizable(false)
     .visible(false) // 等待主题色准备好后再展示，避免启动色差
     .initialization_script(&initial_script);
 

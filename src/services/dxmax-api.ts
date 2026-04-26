@@ -213,11 +213,117 @@ function isPlaceholderProxy(p: { name?: string; server?: string }): boolean {
   return PLACEHOLDER_KEYWORDS.some((kw) => p.name!.includes(kw))
 }
 
-export async function loadAndPatchClashYaml(cipher: string): Promise<string> {
-  const yaml = await decodeClashConfig(cipher)
+/** 解码 res.configs(sing-box JSON) → 取所有 outbound 真节点 → 转成 mihomo 兼容的 clash 节点对象数组。
+ *
+ * 为什么不直接用 res.clash:wyx2685 在 clash 字段里只输出 SS/Trojan/vmess(老 clash 内核兼容),
+ * 把 vless / anytls 全藏在 sing-box 字段里。mihomo 内核支持新协议,所以从 sing-box 反向转回 clash 才能拿全节点。
+ *
+ * 实测(2026-04-26):该字段含 24 个 outbound = 13 vless(Reality+xtls-rprx-vision) + 10 ss + 1 trojan,
+ * 而 res.clash 里只有 12 个(10 ss + 1 trojan + 1 占位)。多出 13 个 vless 是用户实际能用的真节点。
+ */
+interface SingBoxOutbound {
+  type: string
+  tag?: string
+  server?: string
+  server_port?: number
+  password?: string
+  method?: string
+  uuid?: string
+  flow?: string
+  packet_encoding?: string
+  tls?: {
+    enabled?: boolean
+    insecure?: boolean
+    server_name?: string
+    reality?: { enabled?: boolean; public_key?: string; short_id?: string }
+    utls?: { enabled?: boolean; fingerprint?: string }
+  }
+  transport?: unknown
+}
+
+function singboxOutboundToClashProxy(
+  o: SingBoxOutbound,
+): Record<string, unknown> | null {
+  if (!o.tag || !o.server || !o.server_port) return null
+  const base = { name: o.tag, server: o.server, port: o.server_port, udp: true }
+  switch (o.type) {
+    case 'shadowsocks':
+      return {
+        ...base,
+        type: 'ss',
+        cipher: o.method ?? 'aes-256-gcm',
+        password: o.password ?? '',
+      }
+    case 'trojan':
+      return {
+        ...base,
+        type: 'trojan',
+        password: o.password ?? '',
+        sni: o.tls?.server_name || '',
+        'skip-cert-verify': o.tls?.insecure ?? false,
+      }
+    case 'vless': {
+      const proxy: Record<string, unknown> = {
+        ...base,
+        type: 'vless',
+        uuid: o.uuid ?? '',
+        network: 'tcp',
+        tls: o.tls?.enabled ?? true,
+        servername: o.tls?.server_name ?? '',
+        'client-fingerprint': o.tls?.utls?.fingerprint || 'chrome',
+      }
+      if (o.flow) proxy.flow = o.flow
+      if (o.tls?.reality?.enabled) {
+        proxy['reality-opts'] = {
+          'public-key': o.tls.reality.public_key ?? '',
+          'short-id': o.tls.reality.short_id ?? '',
+        }
+      }
+      return proxy
+    }
+    default:
+      return null
+  }
+}
+
+async function extractProxiesFromConfigs(
+  configsCipher: string,
+): Promise<Record<string, unknown>[]> {
+  if (!configsCipher) return []
+  let plain: string
+  try {
+    plain = await aesCbcDecrypt(configsCipher)
+  } catch {
+    return []
+  }
+  let json: { outbounds?: SingBoxOutbound[] }
+  try {
+    json = JSON.parse(plain) as { outbounds?: SingBoxOutbound[] }
+  } catch {
+    return []
+  }
+  const outs = json.outbounds ?? []
+  const proxies: Record<string, unknown>[] = []
+  for (const o of outs) {
+    const p = singboxOutboundToClashProxy(o)
+    if (p && !isPlaceholderProxy(p as { name?: string; server?: string })) {
+      proxies.push(p)
+    }
+  }
+  return proxies
+}
+
+/** 综合解析 wyx2685 后端的 res:
+ *   - 优先从 res.configs(sing-box) 解出全协议节点(含 vless/anytls)
+ *   - 用 res.clash 解码出 proxy-groups + rules(模板)
+ *   - 合并:用 configs 节点替换 clash 的 proxies 字段,然后修补 group 空数组 */
+export async function loadAndPatchClashYaml(
+  clashCipher: string,
+  configsCipher?: string,
+): Promise<string> {
+  const yaml = await decodeClashConfig(clashCipher)
   if (!yaml) throw new Error('clash 配置为空')
 
-  // 动态 import 避开 SSR 顾虑
   const yamlMod = await import('js-yaml')
   const obj = yamlMod.load(yaml) as Record<string, unknown>
 
@@ -225,23 +331,28 @@ export async function loadAndPatchClashYaml(cipher: string): Promise<string> {
     throw new Error('clash 配置解析失败')
   }
 
-  type Proxy = { name?: string; server?: string; type?: string }
   type Group = {
     name?: string
     type?: string
     proxies?: string[] | Record<string, unknown>
   }
 
-  const proxies = (obj.proxies as Proxy[] | undefined) ?? []
-  const groups = (obj['proxy-groups'] as Group[] | undefined) ?? []
+  // 节点源:优先 configs(全协议),失败/为空则退到 clash 字段(SS/Trojan)
+  let proxies = await extractProxiesFromConfigs(configsCipher ?? '')
+  if (proxies.length === 0) {
+    const clashProxies =
+      (obj.proxies as Record<string, unknown>[] | undefined) ?? []
+    proxies = clashProxies.filter(
+      (p) => !isPlaceholderProxy(p as { name?: string; server?: string }),
+    )
+  }
 
-  // 真节点名(过滤占位)
+  const groups = (obj['proxy-groups'] as Group[] | undefined) ?? []
   const realNames = proxies
-    .filter((p) => !isPlaceholderProxy(p))
-    .map((p) => p.name)
+    .map((p) => p.name as string | undefined)
     .filter((n): n is string => !!n)
 
-  // 修补每个 group 的 proxies:空的填全节点;非空保留
+  // 修补每个 group 的 proxies:空的填全节点
   for (const g of groups) {
     const cur = g.proxies
     const isEmpty =
@@ -255,7 +366,7 @@ export async function loadAndPatchClashYaml(cipher: string): Promise<string> {
     }
   }
 
-  // 找 select 组,确保它能直接选到所有节点(把已有的 group 名 + 全部真节点合并)
+  // 找 select 组,确保它能直接选到所有节点
   const selectGroup = groups.find(
     (g) => g.type === 'select' || (g.name && /select|选择|手选/i.test(g.name)),
   )

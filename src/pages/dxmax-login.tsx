@@ -62,7 +62,9 @@ export default function DxmaxLoginPage() {
             'applogin 返回里没有 clash 配置字段,后端可能未启用 wyx2685 补丁',
           )
         }
-        const yaml = await loadAndPatchClashYaml(res.clash)
+        // 同时传 res.configs(sing-box JSON) 让转换器拿到 vless/anytls 等新协议节点;
+        // res.clash 只有 SS/Trojan,会丢 vless 节点
+        const yaml = await loadAndPatchClashYaml(res.clash, res.configs)
         console.log(
           '[DxmaxLogin] 解密+修补 clash YAML 完成,字节数:',
           yaml.length,

@@ -288,38 +288,129 @@ function singboxOutboundToClashProxy(
 
 async function extractProxiesFromConfigs(
   configsCipher: string,
-): Promise<Record<string, unknown>[]> {
-  if (!configsCipher) return []
+): Promise<{ proxies: Record<string, unknown>[]; sharedPassword: string }> {
+  if (!configsCipher) return { proxies: [], sharedPassword: '' }
   let plain: string
   try {
     plain = await aesCbcDecrypt(configsCipher)
   } catch {
-    return []
+    return { proxies: [], sharedPassword: '' }
   }
   let json: { outbounds?: SingBoxOutbound[] }
   try {
     json = JSON.parse(plain) as { outbounds?: SingBoxOutbound[] }
   } catch {
-    return []
+    return { proxies: [], sharedPassword: '' }
   }
   const outs = json.outbounds ?? []
   const proxies: Record<string, unknown>[] = []
+  let sharedPassword = ''
   for (const o of outs) {
+    // 记录共享密码(v2board 所有节点用同一 uuid 当 password)
+    if (!sharedPassword) {
+      sharedPassword = (o.password || o.uuid || '') as string
+    }
     const p = singboxOutboundToClashProxy(o)
     if (p && !isPlaceholderProxy(p as { name?: string; server?: string })) {
       proxies.push(p)
     }
   }
-  return proxies
+  return { proxies, sharedPassword }
+}
+
+interface ConfigsNode {
+  name?: string
+  server?: string
+  server_port?: number
+  type?: string
+  flag?: string
+  tags?: string[] | null
+  index?: number
+}
+
+/** 解码 configsNodes 拿 name→index 映射,作为节点显示顺序的权威来源
+ * (机场后端在 configsNodes 里给每个节点编了 index,该顺序就是用户中心和原版客户端的显示顺序)
+ */
+async function buildOrderMap(
+  configsNodesCipher: string,
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>()
+  if (!configsNodesCipher) return map
+  let plain: string
+  try {
+    plain = await aesCbcDecrypt(configsNodesCipher)
+  } catch {
+    return map
+  }
+  let nodes: ConfigsNode[]
+  try {
+    nodes = JSON.parse(plain) as ConfigsNode[]
+  } catch {
+    return map
+  }
+  for (const n of nodes) {
+    if (n.name && typeof n.index === 'number') {
+      map.set(n.name, n.index)
+    }
+  }
+  return map
+}
+
+/** 解码 res.configsNodes,提取 sing-box outbounds 没出现的 v2node(anytls) 节点。
+ *
+ * wyx2685 把 anytls 节点的连接细节(password)藏起来不输出到 sing-box outbounds,
+ * 但 v2board 的标准做法是所有节点共享用户 uuid 当 password,
+ * 所以从 outbounds 任意一个节点偷 password,拼出能用的 anytls 配置。
+ */
+async function extractAnytlsFromConfigsNodes(
+  configsNodesCipher: string,
+  sharedPassword: string,
+  existingNames: Set<string>,
+): Promise<Record<string, unknown>[]> {
+  if (!configsNodesCipher || !sharedPassword) return []
+  let plain: string
+  try {
+    plain = await aesCbcDecrypt(configsNodesCipher)
+  } catch {
+    return []
+  }
+  let nodes: ConfigsNode[]
+  try {
+    nodes = JSON.parse(plain) as ConfigsNode[]
+  } catch {
+    return []
+  }
+  const result: Record<string, unknown>[] = []
+  for (const n of nodes) {
+    if (n.type !== 'v2node') continue
+    if (!n.name || !n.server || !n.server_port) continue
+    if (existingNames.has(n.name)) continue
+    if (isPlaceholderProxy({ name: n.name, server: n.server })) continue
+    // mihomo anytls 协议: type='anytls' + password + sni + udp
+    result.push({
+      name: n.name,
+      type: 'anytls',
+      server: n.server,
+      port: n.server_port,
+      password: sharedPassword,
+      udp: true,
+      'client-fingerprint': 'chrome',
+      sni: n.server,
+      'skip-cert-verify': false,
+    })
+  }
+  return result
 }
 
 /** 综合解析 wyx2685 后端的 res:
- *   - 优先从 res.configs(sing-box) 解出全协议节点(含 vless/anytls)
- *   - 用 res.clash 解码出 proxy-groups + rules(模板)
- *   - 合并:用 configs 节点替换 clash 的 proxies 字段,然后修补 group 空数组 */
+ *   - 优先从 res.configs(sing-box) 解出 vless/ss/trojan 节点
+ *   - 再从 res.configsNodes 提取 anytls(v2node) 节点(用其他节点的共享 password 拼)
+ *   - 用 res.clash 解码出 proxy-groups + rules 模板
+ *   - 合并节点列表,修补 group 空数组 */
 export async function loadAndPatchClashYaml(
   clashCipher: string,
   configsCipher?: string,
+  configsNodesCipher?: string,
 ): Promise<string> {
   const yaml = await decodeClashConfig(clashCipher)
   if (!yaml) throw new Error('clash 配置为空')
@@ -337,14 +428,49 @@ export async function loadAndPatchClashYaml(
     proxies?: string[] | Record<string, unknown>
   }
 
-  // 节点源:优先 configs(全协议),失败/为空则退到 clash 字段(SS/Trojan)
-  let proxies = await extractProxiesFromConfigs(configsCipher ?? '')
+  // 节点源:优先 configs(vless/ss/trojan),失败/为空则退到 clash 字段(SS/Trojan)
+  let { proxies, sharedPassword } = await extractProxiesFromConfigs(
+    configsCipher ?? '',
+  )
   if (proxies.length === 0) {
     const clashProxies =
       (obj.proxies as Record<string, unknown>[] | undefined) ?? []
     proxies = clashProxies.filter(
       (p) => !isPlaceholderProxy(p as { name?: string; server?: string }),
     )
+    // clash 节点也共享同一 password,拿来当 anytls 密钥
+    if (!sharedPassword && proxies.length > 0) {
+      sharedPassword = ((proxies[0]?.password as string) || '') as string
+    }
+  }
+
+  // 追加 anytls 节点(从 configsNodes 拿)
+  if (configsNodesCipher && sharedPassword) {
+    const existingNames = new Set(
+      proxies.map((p) => p.name as string).filter(Boolean),
+    )
+    const anytls = await extractAnytlsFromConfigsNodes(
+      configsNodesCipher,
+      sharedPassword,
+      existingNames,
+    )
+    proxies = [...proxies, ...anytls]
+  }
+
+  // 按 configsNodes 的 index 字段排序(后端定的展示顺序)
+  if (configsNodesCipher) {
+    const orderMap = await buildOrderMap(configsNodesCipher)
+    if (orderMap.size > 0) {
+      proxies.sort((a, b) => {
+        const ai = orderMap.get(a.name as string)
+        const bi = orderMap.get(b.name as string)
+        // 没在 map 里的节点排到最后
+        if (ai == null && bi == null) return 0
+        if (ai == null) return 1
+        if (bi == null) return -1
+        return ai - bi
+      })
+    }
   }
 
   const groups = (obj['proxy-groups'] as Group[] | undefined) ?? []

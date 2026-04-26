@@ -8,13 +8,13 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import {
-  createProfile,
   deleteProfile,
   enhanceProfiles,
   getProfiles,
+  importProfile,
   patchProfilesConfig,
 } from '@/services/cmds'
-import { loadAndPatchClashYaml, login } from '@/services/dxmax-api'
+import { buildSubscribeUrl, login } from '@/services/dxmax-api'
 import { saveAuth } from '@/services/dxmax-auth'
 
 const SITE_URL = 'https://dxmax.net'
@@ -52,56 +52,38 @@ export default function DxmaxLoginPage() {
       saveAuth(res)
 
       try {
-        // wyx2685 后端的 /api/v1/client/subscribe 标准订阅接口已被掏空(只返回占位节点),
-        // 真节点配置在 applogin 返回的 res.clash 字段(base64 + AES-128-CBC 加密)。
-        // 流程:解密 → 修补 proxy-groups 空数组 → 写本地 profile → 切 current → 删旧 profile。
-        // 顺序很关键:先 createProfile + patchProfilesConfig + enhanceProfiles 让 mihomo 接受新配置,
-        // 最后才 deleteProfile 清掉旧的(否则 Verge 在删 current 那条时,enhance 拿到空 mapping 灌进 mihomo)。
-        if (!res.clash) {
-          throw new Error(
-            'applogin 返回里没有 clash 配置字段,后端可能未启用 wyx2685 补丁',
-          )
-        }
-        // 同时传 res.configs(sing-box JSON) 让转换器拿到 vless/anytls 等新协议节点;
-        // res.clash 只有 SS/Trojan,会丢 vless 节点
-        const yaml = await loadAndPatchClashYaml(res.clash, res.configs)
-        console.log(
-          '[DxmaxLogin] 解密+修补 clash YAML 完成,字节数:',
-          yaml.length,
-        )
+        // v2board 标准订阅 URL(flag=clash.meta) 实测返回完整 clash YAML:
+        // 30 个真节点(vless+anytls+ss+trojan) + 完整 proxy-groups(节点选择/油管/电报/奈飞/苹果/...)
+        // 节点顺序天然按订阅文件原序,不需要二次排序。
+        // 走 importProfile 让 mihomo 直接拉远程订阅(自动 follow Cloudflare 301 重定向)。
+        // 时序顺序:先 importProfile + patchProfilesConfig + enhanceProfiles 让 mihomo 接受新配置,
+        // 最后才 deleteProfile 旧的(避免 Verge enhance 在删 current 时拿到空 mapping)。
+        const subUrl = buildSubscribeUrl(res.token)
+        console.log('[DxmaxLogin] 订阅 URL:', subUrl)
 
-        // 先快照当前 profile uid 列表,后面用 diff 找新创建的 uid
         const before = await getProfiles()
         const beforeUids = new Set(before.items?.map((i) => i.uid) ?? [])
         const oldRealProfileUids = (before.items ?? [])
           .filter((i) => i.type === 'local' || i.type === 'remote')
           .map((i) => i.uid)
 
-        await createProfile(
-          {
-            type: 'local',
-            name: '大炫Max',
-            desc: `登录于 ${new Date().toLocaleString('zh-CN')}`,
-          },
-          yaml,
-        )
+        await importProfile(subUrl)
         const after = await getProfiles()
-        // createProfile 会同时创建主 profile + 5 个空增强模板(merge/script/rules/proxies/groups),
-        // 必须 filter type==='local' 拿到主 profile,不然会切到 merge 模板导致 mihomo 拿空配置
+        // importProfile 创建的是 type='remote' 主 profile + 5 个空增强模板,
+        // filter remote 拿主 profile
         const newProfile = after.items?.find(
-          (i) => !beforeUids.has(i.uid) && i.type === 'local',
+          (i) => !beforeUids.has(i.uid) && i.type === 'remote',
         )
         console.log(
-          '[DxmaxLogin] createProfile 完成,新 profile:',
+          '[DxmaxLogin] importProfile 完成,新 profile:',
           newProfile?.uid,
           newProfile?.name,
           'type=',
           newProfile?.type,
         )
         if (!newProfile) {
-          throw new Error('找不到刚创建的 local profile')
+          throw new Error('找不到刚导入的 remote profile')
         }
-        // 必须先切 current 再 enhance,否则 enhance 用的是旧 current
         await patchProfilesConfig({ current: newProfile.uid })
         await enhanceProfiles()
         console.log(
@@ -109,7 +91,6 @@ export default function DxmaxLoginPage() {
           newProfile.uid,
         )
 
-        // 现在 mihomo 已经吃到新配置,可以安全删旧 profile(只删 local/remote,不删增强模板)
         for (const uid of oldRealProfileUids) {
           try {
             await deleteProfile(uid)

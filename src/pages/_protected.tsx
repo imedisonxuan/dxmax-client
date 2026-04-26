@@ -17,8 +17,10 @@ export default function ProtectedLayout() {
   const { theme } = useCustomTheme()
   const lockedRef = useRef(false)
 
-  // 首次启动:把 theme_mode 锁 light、primary_color 锁大炫蓝。
-  // 用户后续可手动改回深色,但 verge_config.json 里只要有过这条记录就不再覆盖。
+  // 大炫Max 锁死浅色模式(Phase 4):
+  // 5 个自定义页面是硬编码浅色样式,深色会割裂,所以彻底锁 theme_mode='light'。
+  // 设置页里的"主题模式"选项已隐藏,用户无法切换。
+  // 完整暗黑模式留 Phase 5+(需改 5 页面颜色常量为 useDxmaxTheme hook)。
   useEffect(() => {
     if (!verge || lockedRef.current) return
     const wantsLight = verge.theme_mode !== 'light'

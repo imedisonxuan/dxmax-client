@@ -2,17 +2,20 @@
  * 大炫Max 首页 (Phase 4 设计稿对齐版)
  * 设计稿源:~/Desktop/大炫max-design/project/components/HomePage.jsx
  *
- * 复用 Verge 现成 hook:
- * - useSystemProxyState → 电源按钮(toggleSystemProxy)
- * - useTrafficData → 流量卡(实时 up/down)
- * - useCurrentProxy → 节点条(当前选中的代理)
+ * 电源按钮策略:
+ * - 优先 TUN 模式(mihomo 虚拟网卡接管流量,不依赖 macOS 系统代理),
+ *   规避 sysproxy-rs 的 "failed to get default network interface" 死路;
+ * - TUN 不可用(helper 服务没装/没 admin)才 fallback 到 system proxy。
  */
 
 import { useNavigate } from 'react-router'
 
 import { useCurrentProxy } from '@/hooks/use-current-proxy'
 import { useSystemProxyState } from '@/hooks/use-system-proxy-state'
+import { useSystemState } from '@/hooks/use-system-state'
 import { useTrafficData } from '@/hooks/use-traffic-data'
+import { useVerge } from '@/hooks/use-verge'
+import { installService } from '@/services/cmds'
 
 const ACCENT = '#3B82F6'
 const ACCENT_LIGHT = '#DBEAFE'
@@ -35,9 +38,15 @@ function formatBytes(n: number): [string, string] {
 
 export default function DxmaxHomePage() {
   const navigate = useNavigate()
-  const { indicator: connected, toggleSystemProxy } = useSystemProxyState()
+  const { indicator: sysProxyOn, toggleSystemProxy } = useSystemProxyState()
+  const { verge, patchVerge } = useVerge()
+  const { isTunModeAvailable } = useSystemState()
   const { response: trafficQuery } = useTrafficData()
   const { currentProxy, primaryGroupName } = useCurrentProxy()
+
+  const tunOn = !!verge?.enable_tun_mode
+  // 任一开启就视为已连接;关闭时两个都关
+  const connected = tunOn || sysProxyOn
 
   const up = trafficQuery.data?.up ?? 0
   const down = trafficQuery.data?.down ?? 0
@@ -46,14 +55,52 @@ export default function DxmaxHomePage() {
 
   const nodeName = currentProxy?.name || primaryGroupName || '未选择节点'
 
-  const togglePower = () => {
-    console.log('[DxmaxHome] click power, current connected =', connected)
-    toggleSystemProxy(!connected).catch((e) => {
-      console.warn('[DxmaxHome] toggle 系统代理失败', e)
-      alert(
-        `开启系统代理失败:${e instanceof Error ? e.message : String(e)}\n\n常见原因:\n1. mihomo 内核未运行(看 dev 终端日志)\n2. macOS 系统代理设置权限被拒\n3. mixedPort 未监听`,
-      )
-    })
+  const togglePower = async () => {
+    console.log(
+      '[DxmaxHome] click power, connected=',
+      connected,
+      'tun=',
+      tunOn,
+      'sys=',
+      sysProxyOn,
+      'tunAvail=',
+      isTunModeAvailable,
+    )
+    try {
+      if (connected) {
+        // 关闭:同时关 TUN + system proxy
+        if (tunOn) await patchVerge({ enable_tun_mode: false })
+        if (sysProxyOn) await toggleSystemProxy(false)
+        return
+      }
+      // 开启:优先 TUN(绕开 sysproxy 死路),不可用再 fallback system proxy
+      if (isTunModeAvailable) {
+        await patchVerge({ enable_tun_mode: true })
+        return
+      }
+      // TUN 不可用 → 先试 system proxy
+      try {
+        await toggleSystemProxy(true)
+      } catch (e) {
+        console.warn('[DxmaxHome] sysproxy 失败,引导用户装 helper', e)
+        const ok = confirm(
+          'macOS 系统代理无法启用(常见于网络配置异常)。\n\n建议安装"系统服务"以使用 TUN 模式接管流量,这是更稳定的方案。\n\n点击"确定"立即安装(需要管理员密码)。',
+        )
+        if (ok) {
+          try {
+            await installService()
+            alert('系统服务安装成功,请再次点击电源按钮开启代理。')
+          } catch (instErr) {
+            alert(
+              `服务安装失败:${instErr instanceof Error ? instErr.message : String(instErr)}`,
+            )
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[DxmaxHome] togglePower 异常', e)
+      alert(`开启代理失败:${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   const showNotice = () => {
@@ -304,11 +351,11 @@ function PowerButton({
   connected: boolean
   onToggle: () => void
 }) {
-  const size = 180
-  // 配色:开启态用蓝,关闭态用浅灰
-  const ringColor = connected ? ACCENT : '#9CA3AF'
-  const ringOpacity = connected ? 0.22 : 0.14
-  // 水波纹只在按钮边缘附近一圈,内层比按钮稍大,外层再大一点点
+  const size = 144
+  // 配色:开启态深蓝,关闭态淡蓝(跟大炫蓝主调一致)
+  const ringColor = ACCENT
+  const ringOpacity = connected ? 0.22 : 0.13
+  // 水波纹只在按钮边缘附近一圈
   const innerWaveSize = size * 1.12
   const outerWaveSize = size * 1.28
   return (
@@ -357,14 +404,15 @@ function PowerButton({
           width: size,
           height: size,
           borderRadius: '50%',
-          background: connected ? ACCENT : '#E5E7EB',
+          background: connected ? ACCENT : '#FFFFFF',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
+          border: connected ? 'none' : `1.5px solid ${ACCENT_LIGHT}`,
           boxShadow: connected
             ? `0 14px 40px ${ACCENT}66`
-            : `0 6px 20px rgba(0,0,0,0.06)`,
+            : `0 6px 18px ${ACCENT}1F`,
           position: 'relative',
           zIndex: 1,
           userSelect: 'none',
@@ -383,7 +431,7 @@ function PowerButton({
           e.currentTarget.style.transform = 'scale(1.04)'
         }}
       >
-        <PowerIcon size={size * 0.38} color={connected ? '#fff' : '#111827'} />
+        <PowerIcon size={size * 0.4} color={connected ? '#fff' : ACCENT} />
       </div>
     </div>
   )

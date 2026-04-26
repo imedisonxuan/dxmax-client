@@ -50,26 +50,65 @@ function getLatency(record: any): number | null {
 
 export default function DxmaxNodesPage() {
   const navigate = useNavigate()
-  const { proxies, clashConfig, refreshClashConfig } = useAppData()
+  const { proxies, clashConfig, refreshClashConfig, refreshProxy } =
+    useAppData()
   const { primaryGroupName, currentProxy } = useCurrentProxy()
-  const { changeProxy } = useProxySelection()
+  const { changeProxy } = useProxySelection({
+    onSuccess: () => {
+      // mihomo 切完节点后强刷 React Query,UI 才会更新选中状态
+      refreshProxy().catch(() => {})
+    },
+  })
   const [testing, setTesting] = useState(false)
 
-  const group = proxies?.groups?.find((g: any) => g.name === primaryGroupName)
+  // 全局模式下 primaryGroupName='GLOBAL',calcuProxies 把 GLOBAL 单独放在 proxies.global
+  const group =
+    primaryGroupName === 'GLOBAL'
+      ? (proxies?.global as any)
+      : proxies?.groups?.find((g: any) => g.name === primaryGroupName)
+
+  const NESTED_GROUP_TYPES = [
+    'selector',
+    'urltest',
+    'url-test',
+    'fallback',
+    'loadbalance',
+    'relay',
+  ]
+
+  // 主组里嵌套的 url-test/fallback 等组单独提取为"快捷组"显示在节点列表顶部,
+  // 让用户能切换"自动选择"等
+  const autoGroups = ((group?.all ?? []) as any[])
+    .filter((item) => {
+      if (typeof item === 'string') return false
+      const t = (item?.type ?? '').toLowerCase()
+      return ['urltest', 'url-test', 'fallback', 'loadbalance'].includes(t)
+    })
+    .map((item) => ({ name: item.name as string, type: item.type as string }))
+
   // calcuProxies 已经把 group.all 转成 IProxyItem 对象数组,直接读对象字段;
   // 同时过滤掉嵌套的 group(type=Selector/URLTest/Fallback 这种,它们也会出现在 all 里)。
+  // 也过滤掉占位节点(server=127.0.0.1 或名字含特定关键字)。
+  const PLACEHOLDER_KW = [
+    '看公告',
+    '剩余流量',
+    '套餐到期',
+    '到期',
+    '客服',
+    '官网',
+    '更新订阅',
+  ]
+  const isPlaceholder = (name: string, server?: string) => {
+    if (server === '127.0.0.1') return true
+    return PLACEHOLDER_KW.some((kw) => name.includes(kw))
+  }
+
   const nodes: NodeItem[] = ((group?.all ?? []) as any[])
     .filter((item) => {
       if (typeof item === 'string') return true
       const t = (item?.type ?? '').toLowerCase()
-      return ![
-        'selector',
-        'urltest',
-        'url-test',
-        'fallback',
-        'loadbalance',
-        'relay',
-      ].includes(t)
+      if (NESTED_GROUP_TYPES.includes(t)) return false
+      return !isPlaceholder(item?.name ?? '', item?.server)
     })
     .map((item) => {
       if (typeof item === 'string') {
@@ -103,8 +142,22 @@ export default function DxmaxNodesPage() {
   }
 
   const handleSelect = (name: string) => {
-    if (!primaryGroupName) return
-    if (name === currentProxy?.name) return
+    console.log(
+      '[DxmaxNodes] handleSelect',
+      name,
+      'group=',
+      primaryGroupName,
+      'current=',
+      currentProxy?.name,
+    )
+    if (!primaryGroupName) {
+      console.warn('[DxmaxNodes] 没有 primaryGroupName,不能切节点')
+      return
+    }
+    if (name === currentProxy?.name) {
+      console.log('[DxmaxNodes] 已是当前节点,跳过')
+      return
+    }
     changeProxy(primaryGroupName, name, currentProxy?.name)
   }
 
@@ -117,28 +170,29 @@ export default function DxmaxNodesPage() {
   return (
     <div
       style={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
         background: BG,
         color: TEXT,
         fontFamily:
           '-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
         boxSizing: 'border-box',
+        minHeight: '100%',
       }}
     >
       <style>{`
         @keyframes dxmax-spin { to { transform: rotate(360deg); } }
       `}</style>
 
-      {/* Header */}
+      {/* Header(粘性置顶,滚列表时不丢) */}
       <div
         style={{
           padding: '18px 28px 14px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          flexShrink: 0,
+          position: 'sticky',
+          top: 0,
+          background: BG,
+          zIndex: 10,
         }}
       >
         <div
@@ -184,11 +238,9 @@ export default function DxmaxNodesPage() {
         </div>
       </div>
 
-      {/* List */}
+      {/* List(自然流式布局,由外层 layout 主内容区滚) */}
       <div
         style={{
-          flex: 1,
-          overflowY: 'auto',
           padding: '4px 28px 24px',
           display: 'flex',
           flexDirection: 'column',
@@ -236,24 +288,26 @@ export default function DxmaxNodesPage() {
               width: 46,
               height: 26,
               borderRadius: 999,
-              background: globalMode ? ACCENT : '#E5E7EB',
+              background: globalMode ? ACCENT : '#D1D5DB',
+              border: globalMode ? `1px solid ${ACCENT}` : `1px solid #9CA3AF`,
               position: 'relative',
               cursor: 'pointer',
               transition: 'background 0.2s',
               flexShrink: 0,
+              boxSizing: 'border-box',
             }}
           >
             <div
               style={{
                 position: 'absolute',
-                top: 3,
-                left: globalMode ? 23 : 3,
+                top: 2,
+                left: globalMode ? 22 : 2,
                 width: 20,
                 height: 20,
                 borderRadius: '50%',
                 background: '#fff',
                 transition: 'left 0.2s',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
               }}
             />
           </div>
@@ -303,22 +357,26 @@ export default function DxmaxNodesPage() {
           </div>
         </div>
 
-        {/* 节点列表 */}
-        {nodes.map((node) => {
-          const selected = node.name === currentProxy?.name
-          const lat = node.latency
-          const latColor =
-            lat == null
-              ? SUBTLE
-              : lat < 100
-                ? SUCCESS
-                : lat < 200
-                  ? WARN
-                  : DANGER
+        {/* 快捷组(自动选择/故障转移 等嵌套组,点击切到对应策略) */}
+        {autoGroups.map((g) => {
+          const selected = g.name === currentProxy?.name
+          const t = g.type.toLowerCase()
+          const label = /urltest|url-test/.test(t)
+            ? '自动选择'
+            : /fallback/.test(t)
+              ? '故障转移'
+              : /loadbalance/.test(t)
+                ? '负载均衡'
+                : g.name
+          const subtitle = /urltest|url-test/.test(t)
+            ? '按延迟自动选择最快节点'
+            : /fallback/.test(t)
+              ? '故障时自动切到下一个节点'
+              : g.name
           return (
             <div
-              key={node.name}
-              onClick={() => handleSelect(node.name)}
+              key={g.name}
+              onClick={() => handleSelect(g.name)}
               style={{
                 background: selected ? ACCENT_LIGHT : SURFACE,
                 border: `1px solid ${selected ? ACCENT_BORDER : BORDER}`,
@@ -331,91 +389,198 @@ export default function DxmaxNodesPage() {
                 cursor: 'pointer',
                 transition: 'all 0.15s',
               }}
-              onMouseEnter={(e) => {
-                if (!selected) e.currentTarget.style.background = HOVER_BG
-              }}
-              onMouseLeave={(e) => {
-                if (!selected) e.currentTarget.style.background = SURFACE
-              }}
             >
               <div
                 style={{
                   width: 36,
                   height: 36,
                   borderRadius: '50%',
-                  background: selected ? ACCENT : '#F3F4F6',
+                  background: selected ? ACCENT : ACCENT_LIGHT,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontSize: 18,
                   flexShrink: 0,
                 }}
               >
-                {selected ? (
-                  <CheckIcon />
-                ) : (
-                  // 节点名前缀的国旗 emoji 直接复用,简单粗暴但有效
-                  <span style={{ fontSize: 20 }}>{extractFlag(node.name)}</span>
-                )}
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={selected ? '#fff' : ACCENT}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M21 12a9 9 0 0 1-15.3 6.36L3 16" />
+                  <path d="M3 12a9 9 0 0 1 15.3-6.36L21 8" />
+                  <path d="M21 3v5h-5" />
+                  <path d="M3 21v-5h5" />
+                </svg>
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: TEXT,
-                    marginBottom: 4,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {stripFlag(node.name)}
+                <div style={{ fontSize: 14, fontWeight: 700, color: TEXT }}>
+                  {label}
                 </div>
-                <div
-                  style={{
-                    display: 'inline-block',
-                    padding: '2px 8px',
-                    borderRadius: 4,
-                    background: CHIP_BG,
-                    color: CHIP_TEXT,
-                    fontSize: 10,
-                    fontWeight: 600,
-                  }}
-                >
-                  {node.type}
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+                  {subtitle}
                 </div>
               </div>
-              {testing ? (
+              {selected && (
                 <div
                   style={{
-                    width: 14,
-                    height: 14,
-                    border: `2px solid ${PILL}`,
-                    borderTopColor: ACCENT,
-                    borderRadius: '50%',
-                    animation: 'dxmax-spin 0.7s linear infinite',
-                    flexShrink: 0,
+                    fontSize: 11,
+                    color: ACCENT,
+                    fontWeight: 600,
                   }}
-                />
-              ) : (
-                lat != null && (
-                  <div
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: latColor,
-                      fontVariantNumeric: 'tabular-nums',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {lat}ms
-                  </div>
-                )
+                >
+                  使用中
+                </div>
               )}
             </div>
           )
         })}
+
+        {/* 节点列表(参考截图风格:扁平行 + 选中态蓝勾蓝字) */}
+        {nodes.length > 0 && (
+          <div
+            style={{
+              background: SURFACE,
+              border: `1px solid ${BORDER}`,
+              borderRadius: 14,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              overflow: 'hidden',
+            }}
+          >
+            {nodes.map((node, idx) => {
+              const selected = node.name === currentProxy?.name
+              const lat = node.latency
+              const latColor =
+                lat == null
+                  ? SUBTLE
+                  : lat < 100
+                    ? SUCCESS
+                    : lat < 200
+                      ? WARN
+                      : DANGER
+              return (
+                <div key={node.name}>
+                  {idx > 0 && (
+                    <div
+                      style={{
+                        height: 1,
+                        background: '#F3F4F6',
+                        marginLeft: 56,
+                      }}
+                    />
+                  )}
+                  <div
+                    onClick={() => handleSelect(node.name)}
+                    style={{
+                      padding: '14px 18px 14px 16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      cursor: 'pointer',
+                      transition: 'background 0.12s',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = HOVER_BG
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >
+                    {/* 左侧选中标记(占固定 24px 不抖) */}
+                    <div
+                      style={{
+                        width: 24,
+                        flexShrink: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {selected && (
+                        <svg
+                          width="20"
+                          height="20"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke={ACCENT}
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {/* 节点名(带国旗 emoji,选中变蓝) */}
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 700,
+                          color: selected ? ACCENT : TEXT,
+                          marginBottom: 4,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {node.name}
+                      </div>
+                      {/* 协议徽章 */}
+                      <div
+                        style={{
+                          display: 'inline-block',
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          background: CHIP_BG,
+                          color: CHIP_TEXT,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          letterSpacing: 0.5,
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        {node.type}
+                      </div>
+                    </div>
+                    {testing ? (
+                      <div
+                        style={{
+                          width: 14,
+                          height: 14,
+                          border: `2px solid ${PILL}`,
+                          borderTopColor: ACCENT,
+                          borderRadius: '50%',
+                          animation: 'dxmax-spin 0.7s linear infinite',
+                          flexShrink: 0,
+                        }}
+                      />
+                    ) : (
+                      lat != null && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: latColor,
+                            fontVariantNumeric: 'tabular-nums',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {lat}ms
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
 
         {nodes.length === 0 && (
           <div
@@ -432,16 +597,6 @@ export default function DxmaxNodesPage() {
       </div>
     </div>
   )
-}
-
-// 节点名通常是 "🇸🇬 新加坡1×1" 这种格式,提取前缀的国旗 emoji
-function extractFlag(name: string): string {
-  // emoji 国旗是 2 个 region indicator(长度 4 个 UTF-16 单元)
-  const match = name.match(/^[\u{1F1E6}-\u{1F1FF}]{2}/u)
-  return match?.[0] ?? '🌐'
-}
-function stripFlag(name: string): string {
-  return name.replace(/^[\u{1F1E6}-\u{1F1FF}]{2}\s*/u, '').trim() || name
 }
 
 function ArrowLeftIcon() {
@@ -514,23 +669,6 @@ function InfoGlobeIcon() {
       <circle cx="12" cy="12" r="10" />
       <path d="M12 2 a14.5 14.5 0 0 0 0 20 a14.5 14.5 0 0 0 0-20" />
       <path d="M2 12 h20" />
-    </svg>
-  )
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#fff"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="20 6 9 17 4 12" />
     </svg>
   )
 }

@@ -87,11 +87,16 @@ export default function DxmaxHomePage() {
           0%, 100% { opacity: 0.45; transform: scale(1); }
           50% { opacity: 1; transform: scale(1.15); }
         }
-        @keyframes dxmax-ripple {
-          0% { transform: scale(1); opacity: 0.6; }
-          100% { transform: scale(1.6); opacity: 0; }
-        }
         @keyframes dxmax-spin { to { transform: rotate(360deg); } }
+        /* 按钮周边小幅扩散水波纹 */
+        @keyframes dxmax-wave-inner {
+          0% { transform: scale(0.98); opacity: 0.75; }
+          100% { transform: scale(1.15); opacity: 0; }
+        }
+        @keyframes dxmax-wave-outer {
+          0% { transform: scale(0.98); opacity: 0.5; }
+          100% { transform: scale(1.25); opacity: 0; }
+        }
       `}</style>
 
       {/* Header: 大炫Max + 铃铛 */}
@@ -300,6 +305,12 @@ function PowerButton({
   onToggle: () => void
 }) {
   const size = 180
+  // 配色:开启态用蓝,关闭态用浅灰
+  const ringColor = connected ? ACCENT : '#9CA3AF'
+  const ringOpacity = connected ? 0.22 : 0.14
+  // 水波纹只在按钮边缘附近一圈,内层比按钮稍大,外层再大一点点
+  const innerWaveSize = size * 1.12
+  const outerWaveSize = size * 1.28
   return (
     <div
       style={{
@@ -308,51 +319,56 @@ function PowerButton({
         alignItems: 'center',
         justifyContent: 'center',
         padding: 20,
+        width: outerWaveSize,
+        height: outerWaveSize,
       }}
     >
+      {/* 外层水波纹 */}
       <div
         style={{
           position: 'absolute',
-          width: size * 1.8,
-          height: size * 1.8,
+          width: outerWaveSize,
+          height: outerWaveSize,
           borderRadius: '50%',
-          background: connected
-            ? `radial-gradient(circle, ${ACCENT}33 0%, ${ACCENT}00 60%)`
-            : `radial-gradient(circle, rgba(0,0,0,0.04) 0%, transparent 65%)`,
+          background: ringColor,
+          opacity: ringOpacity * 0.55,
+          animation: 'dxmax-wave-outer 2.8s ease-out infinite',
           pointerEvents: 'none',
         }}
       />
-      {connected && (
-        <div
-          style={{
-            position: 'absolute',
-            width: size + 40,
-            height: size + 40,
-            borderRadius: '50%',
-            border: `1.5px solid ${ACCENT}4D`,
-            animation: 'dxmax-ripple 2.4s ease-out infinite',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
+      {/* 内层水波纹(延迟 1.4s 形成节奏感) */}
+      <div
+        style={{
+          position: 'absolute',
+          width: innerWaveSize,
+          height: innerWaveSize,
+          borderRadius: '50%',
+          background: ringColor,
+          opacity: ringOpacity,
+          animation: 'dxmax-wave-inner 2.8s ease-out infinite',
+          animationDelay: '0.9s',
+          pointerEvents: 'none',
+        }}
+      />
+      {/* 中心按钮 */}
       <div
         onClick={onToggle}
         style={{
           width: size,
           height: size,
           borderRadius: '50%',
-          background: connected ? ACCENT : '#F3F4F6',
+          background: connected ? ACCENT : '#E5E7EB',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
-          transition: 'all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)',
           boxShadow: connected
-            ? `0 14px 40px ${ACCENT}66, inset 0 -4px 12px rgba(0,0,0,0.1)`
-            : `0 6px 20px rgba(0,0,0,0.08)`,
+            ? `0 14px 40px ${ACCENT}66`
+            : `0 6px 20px rgba(0,0,0,0.06)`,
           position: 'relative',
           zIndex: 1,
           userSelect: 'none',
+          transition: 'transform 0.18s ease-out, background 0.3s ease',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.transform = 'scale(1.04)'
@@ -360,8 +376,14 @@ function PowerButton({
         onMouseLeave={(e) => {
           e.currentTarget.style.transform = 'scale(1)'
         }}
+        onMouseDown={(e) => {
+          e.currentTarget.style.transform = 'scale(0.96)'
+        }}
+        onMouseUp={(e) => {
+          e.currentTarget.style.transform = 'scale(1.04)'
+        }}
       >
-        <PowerIcon size={size * 0.38} color={connected ? '#fff' : MUTED} />
+        <PowerIcon size={size * 0.38} color={connected ? '#fff' : '#111827'} />
       </div>
     </div>
   )

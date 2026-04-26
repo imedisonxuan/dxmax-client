@@ -56,15 +56,36 @@ export default function DxmaxNodesPage() {
   const [testing, setTesting] = useState(false)
 
   const group = proxies?.groups?.find((g: any) => g.name === primaryGroupName)
-  const nodeNames: string[] = group?.all ?? []
-  const nodes: NodeItem[] = nodeNames
-    .map((name) => {
-      const rec = proxies?.records?.[name]
-      if (!rec) return null
+  // calcuProxies 已经把 group.all 转成 IProxyItem 对象数组,直接读对象字段;
+  // 同时过滤掉嵌套的 group(type=Selector/URLTest/Fallback 这种,它们也会出现在 all 里)。
+  const nodes: NodeItem[] = ((group?.all ?? []) as any[])
+    .filter((item) => {
+      if (typeof item === 'string') return true
+      const t = (item?.type ?? '').toLowerCase()
+      return ![
+        'selector',
+        'urltest',
+        'url-test',
+        'fallback',
+        'loadbalance',
+        'relay',
+      ].includes(t)
+    })
+    .map((item) => {
+      if (typeof item === 'string') {
+        const rec = proxies?.records?.[item]
+        return rec
+          ? {
+              name: item,
+              type: rec.type ?? 'Unknown',
+              latency: getLatency(rec),
+            }
+          : null
+      }
       return {
-        name,
-        type: rec.type ?? 'Unknown',
-        latency: getLatency(rec),
+        name: item.name,
+        type: item.type ?? 'Unknown',
+        latency: getLatency(item),
       } as NodeItem
     })
     .filter((n): n is NodeItem => n !== null)

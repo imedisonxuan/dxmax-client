@@ -9,11 +9,14 @@ import { resolveApiBase } from './dxmax-host'
 const SUB_BASE = 'https://sub.dxmax.cn'
 
 /** 拼标准 v2board 订阅 URL(applogin 返回的 token 就是订阅 token)
- * 不加 flag 参数,跟用户在 v2board 用户中心复制的链接保持一致;
- * mihomo 内核兼容标准 v2board clash 返回格式
+ * 必须带 flag=clash.meta:不带 flag 时 v2board 默认返回 base64 通用订阅(v2ray 格式),
+ * mihomo 不会自动转 clash 配置,导致加载后 0 个 proxy。
+ * 验证(2026-04-26):
+ *   不带 flag → 返回 ss://...127.0.0.1:7890#剩余流量... 这种 base64 通用订阅
+ *   带 flag=clash 或 flag=clash.meta → 返回 mixed-port/proxies/proxy-groups 完整 clash YAML
  */
 export function buildSubscribeUrl(token: string) {
-  return `${SUB_BASE}/api/v1/client/subscribe?token=${encodeURIComponent(token)}`
+  return `${SUB_BASE}/api/v1/client/subscribe?token=${encodeURIComponent(token)}&flag=clash.meta`
 }
 
 export interface LoginResponse {
@@ -182,4 +185,88 @@ export async function decodeClashConfig(cipher: string): Promise<string> {
     // fallthrough
   }
   return cipher
+}
+
+/** 解码 + 修补 wyx2685 后端的 clash YAML
+ *
+ * wyx2685 后端模板有个 bug:proxy-groups 里的 AutoSelect / 故障转移 等组的 proxies
+ * 是空的 {},导致 SELECT → AutoSelect → (空) 套娃,用户没节点可选。
+ *
+ * 修补策略:
+ *   1. 收集所有真实节点名(过滤掉名字含"看公告"/"剩余流量"/"套餐到期"/"127.0.0.1"的占位)
+ *   2. 把节点列表填到 proxy-groups 里所有 proxies 为空的组(自动选/故障转移/Select 等)
+ *   3. 再确保至少一个 select 类型的组里能直接选到所有节点(便于客户端 UI 切换节点)
+ */
+const PLACEHOLDER_KEYWORDS = [
+  '看公告',
+  '剩余流量',
+  '套餐到期',
+  '到期',
+  '客服',
+  '官网',
+  '更新订阅',
+] as const
+
+function isPlaceholderProxy(p: { name?: string; server?: string }): boolean {
+  if (p.server === '127.0.0.1') return true
+  if (!p.name) return false
+  return PLACEHOLDER_KEYWORDS.some((kw) => p.name!.includes(kw))
+}
+
+export async function loadAndPatchClashYaml(cipher: string): Promise<string> {
+  const yaml = await decodeClashConfig(cipher)
+  if (!yaml) throw new Error('clash 配置为空')
+
+  // 动态 import 避开 SSR 顾虑
+  const yamlMod = await import('js-yaml')
+  const obj = yamlMod.load(yaml) as Record<string, unknown>
+
+  if (!obj || typeof obj !== 'object') {
+    throw new Error('clash 配置解析失败')
+  }
+
+  type Proxy = { name?: string; server?: string; type?: string }
+  type Group = {
+    name?: string
+    type?: string
+    proxies?: string[] | Record<string, unknown>
+  }
+
+  const proxies = (obj.proxies as Proxy[] | undefined) ?? []
+  const groups = (obj['proxy-groups'] as Group[] | undefined) ?? []
+
+  // 真节点名(过滤占位)
+  const realNames = proxies
+    .filter((p) => !isPlaceholderProxy(p))
+    .map((p) => p.name)
+    .filter((n): n is string => !!n)
+
+  // 修补每个 group 的 proxies:空的填全节点;非空保留
+  for (const g of groups) {
+    const cur = g.proxies
+    const isEmpty =
+      !cur ||
+      (Array.isArray(cur) && cur.length === 0) ||
+      (typeof cur === 'object' &&
+        !Array.isArray(cur) &&
+        Object.keys(cur).length === 0)
+    if (isEmpty && realNames.length > 0) {
+      g.proxies = [...realNames]
+    }
+  }
+
+  // 找 select 组,确保它能直接选到所有节点(把已有的 group 名 + 全部真节点合并)
+  const selectGroup = groups.find(
+    (g) => g.type === 'select' || (g.name && /select|选择|手选/i.test(g.name)),
+  )
+  if (selectGroup && Array.isArray(selectGroup.proxies)) {
+    const groupNames = groups.map((g) => g.name).filter((n): n is string => !!n)
+    const set = new Set([...selectGroup.proxies, ...groupNames, ...realNames])
+    selectGroup.proxies = [...set].filter((n) => n !== selectGroup.name)
+  }
+
+  obj.proxies = proxies
+  obj['proxy-groups'] = groups
+
+  return yamlMod.dump(obj, { noRefs: true, lineWidth: 1000 })
 }

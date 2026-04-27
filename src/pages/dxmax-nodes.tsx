@@ -7,15 +7,20 @@
  * - useCurrentProxy → 当前选中
  * - useProxySelection → 切换节点
  * - patchClashConfig → 全局模式开关
+ * - delayManager.checkListDelay → 批量测速
+ * - useProxyDelayState → 单节点延迟订阅
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { patchBaseConfig } from 'tauri-plugin-mihomo-api'
 
 import { useCurrentProxy } from '@/hooks/use-current-proxy'
+import { useProxyDelayState } from '@/hooks/use-proxy-delay-state'
 import { useProxySelection } from '@/hooks/use-proxy-selection'
+import { useVerge } from '@/hooks/use-verge'
 import { useAppData } from '@/providers/app-data-context'
+import delayManager from '@/services/delay'
 
 const ACCENT = '#3B82F6'
 const ACCENT_LIGHT = '#DBEAFE'
@@ -35,17 +40,9 @@ const DANGER = '#EF4444'
 const PILL = '#F3F4F6'
 
 interface NodeItem {
+  proxy: IProxyItem
   name: string
   type: string
-  latency: number | null
-}
-
-function getLatency(record: any): number | null {
-  const history = record?.history
-  if (!Array.isArray(history) || history.length === 0) return null
-  const last = history[history.length - 1]
-  if (!last || typeof last.delay !== 'number') return null
-  return last.delay > 0 ? last.delay : null
 }
 
 export default function DxmaxNodesPage() {
@@ -53,6 +50,7 @@ export default function DxmaxNodesPage() {
   const { proxies, clashConfig, refreshClashConfig, refreshProxy } =
     useAppData()
   const { primaryGroupName, currentProxy } = useCurrentProxy()
+  const { verge } = useVerge()
   const { changeProxy } = useProxySelection({
     onSuccess: () => {
       // mihomo 切完节点后强刷 React Query,UI 才会更新选中状态
@@ -60,6 +58,7 @@ export default function DxmaxNodesPage() {
     },
   })
   const [testing, setTesting] = useState(false)
+  const timeout = verge?.default_latency_timeout || 10000
 
   // 全局模式下 primaryGroupName='GLOBAL',calcuProxies 把 GLOBAL 单独放在 proxies.global
   const group =
@@ -114,20 +113,29 @@ export default function DxmaxNodesPage() {
       if (typeof item === 'string') {
         const rec = proxies?.records?.[item]
         return rec
-          ? {
-              name: item,
-              type: rec.type ?? 'Unknown',
-              latency: getLatency(rec),
-            }
+          ? { proxy: rec, name: item, type: rec.type ?? 'Unknown' }
           : null
       }
       return {
-        name: item.name,
-        type: item.type ?? 'Unknown',
-        latency: getLatency(item),
-      } as NodeItem
+        proxy: item as IProxyItem,
+        name: item.name as string,
+        type: (item.type as string) ?? 'Unknown',
+      }
     })
     .filter((n): n is NodeItem => n !== null)
+
+  // 给当前组设置 testUrl,delayManager 测速时会读这个 URL。
+  // 优先级:group.testUrl > verge.default_latency_test > cloudflare 兜底
+  const groupTestUrl =
+    (group as any)?.testUrl?.trim() ||
+    verge?.default_latency_test?.trim() ||
+    'http://cp.cloudflare.com/generate_204'
+
+  useEffect(() => {
+    if (primaryGroupName) {
+      delayManager.setUrl(primaryGroupName, groupTestUrl)
+    }
+  }, [primaryGroupName, groupTestUrl])
 
   const currentMode = clashConfig?.mode?.toLowerCase() ?? 'rule'
   const globalMode = currentMode === 'global'
@@ -161,10 +169,20 @@ export default function DxmaxNodesPage() {
     changeProxy(primaryGroupName, name, currentProxy?.name)
   }
 
-  const runTest = () => {
+  const runTest = async () => {
     if (testing) return
+    if (!primaryGroupName || nodes.length === 0) return
     setTesting(true)
-    setTimeout(() => setTesting(false), 1400)
+    try {
+      const names = nodes.map((n) => n.name)
+      await delayManager.checkListDelay(names, primaryGroupName, timeout)
+      // 测完拉一次 proxies,把延迟写回 React Query 缓存(供未来重新进页用)
+      refreshProxy().catch(() => {})
+    } catch (e) {
+      console.warn('[DxmaxNodes] 批量测速失败', e)
+    } finally {
+      setTesting(false)
+    }
   }
 
   return (
@@ -452,133 +470,16 @@ export default function DxmaxNodesPage() {
               overflow: 'hidden',
             }}
           >
-            {nodes.map((node, idx) => {
-              const selected = node.name === currentProxy?.name
-              const lat = node.latency
-              const latColor =
-                lat == null
-                  ? SUBTLE
-                  : lat < 100
-                    ? SUCCESS
-                    : lat < 200
-                      ? WARN
-                      : DANGER
-              return (
-                <div key={node.name}>
-                  {idx > 0 && (
-                    <div
-                      style={{
-                        height: 1,
-                        background: '#F3F4F6',
-                        marginLeft: 56,
-                      }}
-                    />
-                  )}
-                  <div
-                    onClick={() => handleSelect(node.name)}
-                    style={{
-                      padding: '14px 18px 14px 16px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 12,
-                      cursor: 'pointer',
-                      transition: 'background 0.12s',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = HOVER_BG
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent'
-                    }}
-                  >
-                    {/* 左侧选中标记(占固定 24px 不抖) */}
-                    <div
-                      style={{
-                        width: 24,
-                        flexShrink: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      {selected && (
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke={ACCENT}
-                          strokeWidth="3"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      )}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {/* 节点名(带国旗 emoji,选中变蓝) */}
-                      <div
-                        style={{
-                          fontSize: 14,
-                          fontWeight: 700,
-                          color: selected ? ACCENT : TEXT,
-                          marginBottom: 4,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {node.name}
-                      </div>
-                      {/* 协议徽章 */}
-                      <div
-                        style={{
-                          display: 'inline-block',
-                          padding: '2px 8px',
-                          borderRadius: 4,
-                          background: CHIP_BG,
-                          color: CHIP_TEXT,
-                          fontSize: 10,
-                          fontWeight: 700,
-                          letterSpacing: 0.5,
-                          textTransform: 'uppercase',
-                        }}
-                      >
-                        {node.type}
-                      </div>
-                    </div>
-                    {testing ? (
-                      <div
-                        style={{
-                          width: 14,
-                          height: 14,
-                          border: `2px solid ${PILL}`,
-                          borderTopColor: ACCENT,
-                          borderRadius: '50%',
-                          animation: 'dxmax-spin 0.7s linear infinite',
-                          flexShrink: 0,
-                        }}
-                      />
-                    ) : (
-                      lat != null && (
-                        <div
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: latColor,
-                            fontVariantNumeric: 'tabular-nums',
-                            flexShrink: 0,
-                          }}
-                        >
-                          {lat}ms
-                        </div>
-                      )
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+            {nodes.map((node, idx) => (
+              <NodeRow
+                key={node.name}
+                node={node}
+                groupName={primaryGroupName ?? ''}
+                selected={node.name === currentProxy?.name}
+                isFirst={idx === 0}
+                onSelect={() => handleSelect(node.name)}
+              />
+            ))}
           </div>
         )}
 
@@ -594,6 +495,205 @@ export default function DxmaxNodesPage() {
             暂无节点数据(订阅未加载或网络问题)
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+interface NodeRowProps {
+  node: NodeItem
+  groupName: string
+  selected: boolean
+  isFirst: boolean
+  onSelect: () => void
+}
+
+function NodeRow({
+  node,
+  groupName,
+  selected,
+  isFirst,
+  onSelect,
+}: NodeRowProps) {
+  const { delayValue, onDelay, timeout } = useProxyDelayState(
+    node.proxy,
+    groupName,
+  )
+
+  // delayValue 语义:-1 未测 / -2 测试中 / 0 超时 / >1e5 错误 / 其他 真延迟
+  const isTesting = delayValue === -2
+  const isError = delayValue > 1e5
+  const isTimeout =
+    !isError &&
+    !isTesting &&
+    (delayValue === 0 || (delayValue >= timeout && delayValue <= 1e5))
+  const hasDelay = !isTesting && !isError && !isTimeout && delayValue > 0
+
+  const latColor = !hasDelay
+    ? SUBTLE
+    : delayValue < 100
+      ? SUCCESS
+      : delayValue < 200
+        ? WARN
+        : DANGER
+
+  const handleDelayClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (isTesting) return
+    onDelay().catch(() => {})
+  }
+
+  return (
+    <div>
+      {!isFirst && (
+        <div
+          style={{
+            height: 1,
+            background: '#F3F4F6',
+            marginLeft: 56,
+          }}
+        />
+      )}
+      <div
+        onClick={onSelect}
+        style={{
+          padding: '14px 18px 14px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          cursor: 'pointer',
+          transition: 'background 0.12s',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = HOVER_BG
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent'
+        }}
+      >
+        <div
+          style={{
+            width: 24,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {selected && (
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={ACCENT}
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          )}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              color: selected ? ACCENT : TEXT,
+              marginBottom: 4,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {node.name}
+          </div>
+          <div
+            style={{
+              display: 'inline-block',
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: CHIP_BG,
+              color: CHIP_TEXT,
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: 0.5,
+              textTransform: 'uppercase',
+            }}
+          >
+            {node.type}
+          </div>
+        </div>
+        <div
+          onClick={handleDelayClick}
+          title={isTesting ? '测试中' : '点击重新测试'}
+          style={{
+            minWidth: 50,
+            height: 26,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            flexShrink: 0,
+            cursor: isTesting ? 'wait' : 'pointer',
+          }}
+        >
+          {isTesting ? (
+            <div
+              style={{
+                width: 14,
+                height: 14,
+                border: `2px solid ${PILL}`,
+                borderTopColor: ACCENT,
+                borderRadius: '50%',
+                animation: 'dxmax-spin 0.7s linear infinite',
+              }}
+            />
+          ) : isError ? (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: DANGER,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              Error
+            </span>
+          ) : isTimeout ? (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: DANGER,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              超时
+            </span>
+          ) : hasDelay ? (
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: latColor,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              {delayValue}ms
+            </span>
+          ) : (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: SUBTLE,
+              }}
+            >
+              测速
+            </span>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -6,10 +6,10 @@
  * 菜单项跳浏览器到 dxmax.net 对应路径(应用内购买等 Phase 5+ 再做)
  */
 
-import { open as openShell } from '@tauri-apps/plugin-shell'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import DxmaxWebViewOverlay from '@/components/dxmax-webview-overlay'
 import { deleteProfile, getProfiles } from '@/services/cmds'
 import { sync } from '@/services/dxmax-api'
 import {
@@ -55,17 +55,25 @@ const MENU = [
   },
 ] as const
 
-function openBrowser(url: string) {
-  openShell(url).catch(() => {
-    window.open(url, '_blank')
-  })
-}
-
 export default function DxmaxAccountPage() {
   const navigate = useNavigate()
   const [user, setUser] = useState<SavedUser | null>(() => getUser())
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 内嵌 webview overlay(在线商店/订单/邀请)
+  const [embed, setEmbed] = useState<{ url: string; title: string } | null>(
+    null,
+  )
+  const openEmbed = (fullUrl: string, title: string) => {
+    const token = getToken()
+    // hash router 的 token 拼在 hash 之后,且 v2board web 端要支持解析才能自动登录;
+    // 这里带上无害,不支持时用户在 iframe 里手动登录一次即可
+    const sep = fullUrl.includes('?') ? '&' : '?'
+    const url = token
+      ? `${fullUrl}${sep}token=${encodeURIComponent(token)}`
+      : fullUrl
+    setEmbed({ url, title })
+  }
 
   const refresh = async (silent = false) => {
     const token = getToken()
@@ -397,7 +405,7 @@ export default function DxmaxAccountPage() {
               <div style={{ height: 1, background: DIVIDER, marginLeft: 54 }} />
             )}
             <div
-              onClick={() => openBrowser(item.href)}
+              onClick={() => openEmbed(item.href, item.label)}
               style={{
                 height: 54,
                 display: 'flex',
@@ -477,6 +485,12 @@ export default function DxmaxAccountPage() {
           to { transform: rotate(360deg); }
         }
       `}</style>
+      <DxmaxWebViewOverlay
+        open={!!embed}
+        url={embed?.url ?? ''}
+        title={embed?.title ?? ''}
+        onClose={() => setEmbed(null)}
+      />
     </div>
   )
 }

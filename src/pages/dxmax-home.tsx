@@ -3,19 +3,27 @@
  * 设计稿源:~/Desktop/大炫max-design/project/components/HomePage.jsx
  *
  * 电源按钮策略:
- * - 优先 TUN 模式(mihomo 虚拟网卡接管流量,不依赖 macOS 系统代理),
- *   规避 sysproxy-rs 的 "failed to get default network interface" 死路;
- * - TUN 不可用(helper 服务没装/没 admin)才 fallback 到 system proxy。
+ * - 仅走 TUN 模式(mihomo 虚拟网卡接管流量),不再 fallback 到 sysproxy
+ *   (sysproxy-rs 在大炫机器上必抛 "failed to get default network interface")
+ * - 点击时如果发现 TUN 不可用,先 refetch 一次 service 状态(刚装好但缓存没刷新的情况)
+ * - 仍不可用:dev 模式给精确手动启动命令;生产模式弹 confirm 装服务
  */
 
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import DxmaxAlertModal from '@/components/dxmax-alert-modal'
+import DxmaxConfirmDialog from '@/components/dxmax-confirm-dialog'
+import DxmaxNoticePanel from '@/components/dxmax-notice-panel'
 import { useCurrentProxy } from '@/hooks/use-current-proxy'
 import { useSystemProxyState } from '@/hooks/use-system-proxy-state'
 import { useSystemState } from '@/hooks/use-system-state'
 import { useTrafficData } from '@/hooks/use-traffic-data'
 import { useVerge } from '@/hooks/use-verge'
 import { installService } from '@/services/cmds'
+import { fetchNotices } from '@/services/dxmax-api'
+import { getToken } from '@/services/dxmax-auth'
+import { getMaxReadNoticeId } from '@/utils/dxmax-notice-read'
 
 const ACCENT = '#3B82F6'
 const ACCENT_LIGHT = '#DBEAFE'
@@ -40,7 +48,7 @@ export default function DxmaxHomePage() {
   const navigate = useNavigate()
   const { indicator: sysProxyOn, toggleSystemProxy } = useSystemProxyState()
   const { verge, patchVerge } = useVerge()
-  const { isTunModeAvailable } = useSystemState()
+  const { isTunModeAvailable, mutateSystemState } = useSystemState()
   const { response: trafficQuery } = useTrafficData()
   const { currentProxy, primaryGroupName } = useCurrentProxy()
 
@@ -55,6 +63,32 @@ export default function DxmaxHomePage() {
 
   const nodeName = currentProxy?.name || primaryGroupName || '未选择节点'
 
+  // 公告:挂载时静默拉一次,判断有没有未读
+  const [noticeOpen, setNoticeOpen] = useState(false)
+  const [hasUnread, setHasUnread] = useState(false)
+  const handleNoticeClose = useCallback(() => setNoticeOpen(false), [])
+  const handleUnreadChange = useCallback((c: number) => setHasUnread(c > 0), [])
+  useEffect(() => {
+    const token = getToken()
+    if (!token) return
+    fetchNotices(token)
+      .then((res) => {
+        const items = (res.data ?? []).filter((n) => n.show === 1)
+        const maxId = items.reduce((m, n) => (n.id > m ? n.id : m), 0)
+        setHasUnread(maxId > getMaxReadNoticeId())
+      })
+      .catch(() => {})
+  }, [])
+
+  // 电源按钮的提示弹窗(替代原生 alert/confirm)
+  type PowerDialog =
+    | { kind: 'service-dev' }
+    | { kind: 'service-prod' }
+    | { kind: 'install-failed'; message: string }
+    | { kind: 'power-failed'; message: string }
+    | null
+  const [powerDialog, setPowerDialog] = useState<PowerDialog>(null)
+
   const togglePower = async () => {
     console.log(
       '[DxmaxHome] click power, connected=',
@@ -68,43 +102,50 @@ export default function DxmaxHomePage() {
     )
     try {
       if (connected) {
-        // 关闭:同时关 TUN + system proxy
         if (tunOn) await patchVerge({ enable_tun_mode: false })
         if (sysProxyOn) await toggleSystemProxy(false)
         return
       }
-      // 开启:优先 TUN(绕开 sysproxy 死路),不可用再 fallback system proxy
-      if (isTunModeAvailable) {
+      let tunReady = isTunModeAvailable
+      if (!tunReady) {
+        const result = await mutateSystemState()
+        tunReady = !!(result.data?.isAdminMode || result.data?.isServiceOk)
+      }
+      if (tunReady) {
         await patchVerge({ enable_tun_mode: true })
         return
       }
-      // TUN 不可用 → 先试 system proxy
-      try {
-        await toggleSystemProxy(true)
-      } catch (e) {
-        console.warn('[DxmaxHome] sysproxy 失败,引导用户装 helper', e)
-        const ok = confirm(
-          'macOS 系统代理无法启用(常见于网络配置异常)。\n\n建议安装"系统服务"以使用 TUN 模式接管流量,这是更稳定的方案。\n\n点击"确定"立即安装(需要管理员密码)。',
-        )
-        if (ok) {
-          try {
-            await installService()
-            alert('系统服务安装成功,请再次点击电源按钮开启代理。')
-          } catch (instErr) {
-            alert(
-              `服务安装失败:${instErr instanceof Error ? instErr.message : String(instErr)}`,
-            )
-          }
-        }
-      }
+      // 系统服务没跑 → 弹自定义对话框(蓝白风格)
+      setPowerDialog(
+        import.meta.env.DEV
+          ? { kind: 'service-dev' }
+          : { kind: 'service-prod' },
+      )
     } catch (e) {
       console.error('[DxmaxHome] togglePower 异常', e)
-      alert(`开启代理失败:${e instanceof Error ? e.message : String(e)}`)
+      setPowerDialog({
+        kind: 'power-failed',
+        message: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+
+  const installAndEnable = async () => {
+    setPowerDialog(null)
+    try {
+      await installService()
+      await mutateSystemState()
+      await patchVerge({ enable_tun_mode: true })
+    } catch (e) {
+      setPowerDialog({
+        kind: 'install-failed',
+        message: e instanceof Error ? e.message : String(e),
+      })
     }
   }
 
   const showNotice = () => {
-    alert('公告功能开发中,敬请期待。')
+    setNoticeOpen(true)
   }
 
   return (
@@ -187,19 +228,21 @@ export default function DxmaxHomePage() {
           >
             <BellIcon />
           </div>
-          <div
-            style={{
-              position: 'absolute',
-              top: 6,
-              right: 6,
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: DANGER,
-              border: `1.5px solid ${BG}`,
-              animation: 'dxmax-bell-dot 1.8s ease-in-out infinite',
-            }}
-          />
+          {hasUnread && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 6,
+                right: 6,
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: DANGER,
+                border: `1.5px solid ${BG}`,
+                animation: 'dxmax-bell-dot 1.8s ease-in-out infinite',
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -340,6 +383,113 @@ export default function DxmaxHomePage() {
           />
         </div>
       </div>
+      <DxmaxNoticePanel
+        open={noticeOpen}
+        onClose={handleNoticeClose}
+        onUnreadChange={handleUnreadChange}
+      />
+      <DxmaxAlertModal />
+      <DxmaxConfirmDialog
+        open={powerDialog?.kind === 'service-dev'}
+        title="系统服务未运行"
+        body={<ServiceDevBody />}
+        okText="我知道了"
+        onOk={() => setPowerDialog(null)}
+      />
+      <DxmaxConfirmDialog
+        open={powerDialog?.kind === 'service-prod'}
+        title="需要安装系统服务"
+        body={
+          <span>
+            开启代理需要安装一个后台服务来接管系统流量(macOS 会要求管理员密码)。
+            点击「立即安装」继续。
+          </span>
+        }
+        okText="立即安装"
+        cancelText="取消"
+        onOk={installAndEnable}
+        onCancel={() => setPowerDialog(null)}
+      />
+      <DxmaxConfirmDialog
+        open={powerDialog?.kind === 'install-failed'}
+        title="服务安装失败"
+        body={
+          <span style={{ wordBreak: 'break-word' }}>
+            {powerDialog?.kind === 'install-failed' ? powerDialog.message : ''}
+          </span>
+        }
+        okText="知道了"
+        danger
+        onOk={() => setPowerDialog(null)}
+      />
+      <DxmaxConfirmDialog
+        open={powerDialog?.kind === 'power-failed'}
+        title="开启代理失败"
+        body={
+          <span style={{ wordBreak: 'break-word' }}>
+            {powerDialog?.kind === 'power-failed' ? powerDialog.message : ''}
+          </span>
+        }
+        okText="知道了"
+        danger
+        onOk={() => setPowerDialog(null)}
+      />
+    </div>
+  )
+}
+
+const SERVICE_LAUNCH_CMD =
+  'sudo launchctl bootstrap system /Library/LaunchDaemons/io.github.clash-verge-rev.clash-verge-rev.service.plist'
+
+function ServiceDevBody() {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(SERVICE_LAUNCH_CMD)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div>
+        开发模式下需要手动启动系统服务。请在终端执行下面这条命令(只需一次,
+        启动后回到本应用按 Cmd+R 刷新即可):
+      </div>
+      <div
+        style={{
+          background: '#F3F4F6',
+          border: '1px solid #E5E7EB',
+          borderRadius: 8,
+          padding: '10px 12px',
+          fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+          fontSize: 12,
+          color: '#111827',
+          wordBreak: 'break-all',
+          lineHeight: 1.55,
+        }}
+      >
+        {SERVICE_LAUNCH_CMD}
+      </div>
+      <button
+        onClick={copy}
+        style={{
+          alignSelf: 'flex-start',
+          padding: '6px 14px',
+          borderRadius: 8,
+          border: '1px solid #3B82F6',
+          background: copied ? '#3B82F6' : '#FFFFFF',
+          color: copied ? '#FFFFFF' : '#3B82F6',
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: 'pointer',
+          transition: 'background 0.15s, color 0.15s',
+        }}
+      >
+        {copied ? '已复制 ✓' : '复制命令'}
+      </button>
     </div>
   )
 }

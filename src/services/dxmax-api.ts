@@ -125,6 +125,24 @@ export function sync(token: string, version = '1.0.0') {
   })
 }
 
+export interface NoticeItem {
+  id: number
+  title: string
+  content: string
+  show: number
+  img_url: string | null
+  tags: string[] | null
+  created_at: number
+  updated_at: number
+}
+
+/** GET /api/v1/app/appnotice — 公告列表(token 走 query) */
+export function fetchNotices(token: string) {
+  return request<{ data: NoticeItem[] }>(
+    `/api/v1/app/appnotice?token=${encodeURIComponent(token)}`,
+  )
+}
+
 /** POST /api/v1/app/appupdate — 检查版本更新 */
 export function checkUpdate(
   system: 'macos' | 'windows' | 'android',

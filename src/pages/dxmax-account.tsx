@@ -37,6 +37,26 @@ const SHADOW = '0 1px 3px rgba(0,0,0,0.04)'
 
 const WEBSITE = 'https://dxmax.net'
 
+// 把 "10.77G" / "150G" / "1.5T" / "500M" / "800K" / "10240B" 解析成字节
+// 后端 useTf / transfer_enable 是已格式化的字符串,这里反向解析以便本地算百分比
+function parseTrafficToBytes(s: unknown): number | null {
+  if (typeof s !== 'string') return null
+  const m = s.trim().match(/^([\d.]+)\s*([KMGTP]?)B?$/i)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  if (!isFinite(n)) return null
+  const unit = m[2].toUpperCase()
+  const mult: Record<string, number> = {
+    '': 1,
+    K: 1024,
+    M: 1024 ** 2,
+    G: 1024 ** 3,
+    T: 1024 ** 4,
+    P: 1024 ** 5,
+  }
+  return n * (mult[unit] ?? 1)
+}
+
 const MENU = [
   {
     label: '在线商店',
@@ -133,7 +153,12 @@ export default function DxmaxAccountPage() {
 
   const used = user.useTf ?? '—'
   const total = user.transfer_enable ?? '—'
-  const pct = Math.max(0, Math.min(100, user.tfPercentage ?? 0))
+  const usedBytes = parseTrafficToBytes(user.useTf)
+  const totalBytes = parseTrafficToBytes(user.transfer_enable)
+  const pct =
+    usedBytes != null && totalBytes != null && totalBytes > 0
+      ? Math.max(0, Math.min(100, (usedBytes / totalBytes) * 100))
+      : Math.max(0, Math.min(100, user.tfPercentage ?? 0))
   const expiredText = user.expired ?? '长期有效'
 
   return (
